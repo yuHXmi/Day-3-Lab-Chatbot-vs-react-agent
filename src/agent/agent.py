@@ -1,9 +1,9 @@
+import inspect
 from typing import List, Dict, Any, Optional
 
 from src.agent.parsers import parse_action, parse_final_answer
 from src.core.llm_provider import LLMProvider
 from src.telemetry.logger import logger
-from src.telemetry.metrics import tracker
 
 
 class ReActAgent:
@@ -52,6 +52,7 @@ Rules:
 - Action syntax: check_stock(item_name="iPhone"), get_discount(coupon_code="WINNER"), calc_shipping(weight=0.7, destination="Hanoi")
 - For order totals: check_stock → get_discount (if coupon) → calc_shipping (weight = unit weight × quantity)
 - If a tool returns Error, fix arguments or explain in Final Answer
+- If Observation says an argument is invalid, retry with the listed valid arguments
 - Do NOT invent Observation lines — only the system provides them
 - One Action per turn
 
@@ -117,11 +118,21 @@ Action: check_stock(item_name="iPhone")
         """
         tool = self._tool_map.get(tool_name)
         if not tool:
-            return f"Tool {tool_name} not found."
+            valid_tools = ", ".join(self._tool_map)
+            return f"Error: Tool '{tool_name}' not found. Valid tools: {valid_tools}."
 
         tool_function = tool.get("function")
         if tool_function is None:
             return f"Tool {tool_name} has no function configured."
+
+        validation_error = self._validate_tool_args(tool_name, tool_function, kwargs)
+        if validation_error:
+            logger.log_event("TOOL_VALIDATION_ERROR", {
+                "tool_name": tool_name,
+                "args": kwargs,
+                "error": validation_error,
+            })
+            return validation_error
 
         try:
             result = tool_function(**kwargs)
@@ -135,3 +146,27 @@ Action: check_stock(item_name="iPhone")
             return f"Tool {tool_name} failed: {exc}"
 
         return f"Tool {tool_name} not found."
+
+    def _validate_tool_args(self, tool_name: str, tool_function: Any, kwargs: Dict[str, Any]) -> Optional[str]:
+        signature = inspect.signature(tool_function)
+        valid_args = list(signature.parameters)
+        required_args = [
+            name
+            for name, parameter in signature.parameters.items()
+            if parameter.default is inspect.Parameter.empty
+        ]
+
+        unknown_args = [name for name in kwargs if name not in signature.parameters]
+        missing_args = [name for name in required_args if name not in kwargs]
+
+        if not unknown_args and not missing_args:
+            return None
+
+        parts = [f"Error: Invalid arguments for {tool_name}."]
+        if unknown_args:
+            parts.append(f"Unknown arguments: {', '.join(unknown_args)}.")
+        if missing_args:
+            parts.append(f"Missing required arguments: {', '.join(missing_args)}.")
+        parts.append(f"Valid arguments are: {', '.join(valid_args)}.")
+        parts.append("Retry using the exact tool schema.")
+        return " ".join(parts)

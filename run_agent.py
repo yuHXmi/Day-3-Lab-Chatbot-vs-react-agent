@@ -1,5 +1,5 @@
 """
-Lab 3 — Phase 3: ReAct Agent v1 (Smart E-commerce Assistant).
+Lab 3 — Phase 3: ReAct Agent v2 (Smart E-commerce Assistant).
   python run_agent.py
   python run_agent.py --interactive
 """
@@ -74,7 +74,7 @@ def _validate_env(provider: str) -> None:
 
 def run_demo(agent: ReActAgent) -> None:
     print("=" * 60)
-    print("Lab 3 — ReAct Agent v1")
+    print("Lab 3 — ReAct Agent v2")
     print("=" * 60)
 
     for case in TEST_CASES:
