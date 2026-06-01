@@ -1,7 +1,7 @@
 # Individual Report: Lab 3 - Chatbot vs ReAct Agent
 
-- **Student Name**: [Fill in your name]
-- **Student ID**: [Fill in your student ID]
+- **Student Name**: Ha Xuan Huy
+- **Student ID**: 2A202600829
 - **Date**: 2026-06-01
 
 ---
@@ -17,38 +17,21 @@ My contribution focused on making the ReAct agent work reliably for an e-commerc
   - Built the prompt dynamically from the user question and previous observations.
   - Added `max_steps` to prevent infinite loops.
   - Connected parsed tool calls to actual Python functions through `_execute_tool`.
-  - Developed Agent v2 validation before tool execution, including unknown tool detection, missing argument detection, and invalid argument detection.
-  - Returned structured correction observations so the LLM can retry with the correct tool schema instead of failing immediately.
   - Logged agent start, each reasoning step, tool calls, latency, usage, and agent end events.
-  - Added `TOOL_VALIDATION_ERROR` logging for invalid tool calls.
 
 - `src/agent/parsers.py`
   - Used regular expressions to parse `Final Answer:` and `Action: tool_name(...)`.
   - Converted tool arguments from strings into suitable Python values such as `int`, `float`, and `bool`.
-  - Supported tool calls such as `check_stock(item_name="iPhone")`, `get_discount(coupon_code="WINNER")`, and `calc_shipping(weight=0.7, destination="Hanoi")`.
+  - Supported tool call `check_stock(item_name="iPhone")`.
 
 - `src/tools/check_stock.py`
   - Provided inventory lookup for products such as iPhone 15, MacBook Air M3, and AirPods Pro 2.
   - Returned structured information including product name, stock, unit price in VND, and weight in kilograms.
   - Added product name normalization so inputs like `iPhone`, `iphone`, and partial names can still be resolved.
 
-- `src/tools/get_discount.py`
-  - Implemented coupon validation for codes such as `WINNER` and `VIP`.
-  - Returned discount rate and validity status so the agent can calculate order totals correctly.
-
-- `src/tools/calc_shipping.py`
-  - Implemented shipping fee calculation based on total package weight and destination.
-  - Added validation for invalid weight and empty destination.
-  - Supported city-specific rates for Hanoi, Ho Chi Minh / HCMC, and Da Nang, with a default fallback rate.
-
 - `src/tools/registry.py`
   - Registered all tools in one central `TOOL_SPECS` list.
   - Documented each tool's purpose, parameters, and example usage so the LLM can call tools with the correct syntax.
-
-- `tests/test_agent_v2.py`
-  - Added a fake LLM provider test so Agent v2 can be verified without calling Gemini, OpenAI, or a local model.
-  - Tested the exact failure pattern `calc_shipping(weight_kg=0.7, destination="Hanoi")`.
-  - Confirmed that the agent returns an observation listing valid arguments and then succeeds when the model retries with `weight=0.7`.
 
 ### Code Highlights
 
@@ -70,16 +53,6 @@ if action:
 ```
 
 This is the key difference from the baseline chatbot. The chatbot can only generate an answer from model knowledge, while the ReAct agent can ground its answer in real tool outputs.
-
-Agent v2 adds one more reliability layer before execution. Instead of directly calling a Python function with any arguments produced by the LLM, the agent checks the function signature first:
-
-```python
-validation_error = self._validate_tool_args(tool_name, tool_function, kwargs)
-if validation_error:
-    return validation_error
-```
-
-This means malformed actions become useful feedback inside the ReAct loop. For example, if the model calls `calc_shipping(weight_kg=0.7, destination="Hanoi")`, the agent responds with an observation explaining that `weight_kg` is unknown and that the valid arguments are `weight` and `destination`.
 
 ### Documentation
 
@@ -147,31 +120,13 @@ From the model's point of view, `weight_kg` was a reasonable argument name becau
 
 ### Solution
 
-The first fix was to align the system prompt and tool registry with the real function signature:
+The fix was to align the system prompt and tool registry with the real function signature:
 
 ```text
 calc_shipping(weight=0.7, destination="Hanoi")
 ```
 
-For Agent v2, I added a stronger fix: argument validation before tool execution. With this improvement, the agent can detect the same mistake even if the LLM repeats it later.
-
-V2 recovery example:
-
-```text
-Thought: I need shipping.
-Action: calc_shipping(weight_kg=0.7, destination="Hanoi")
-
-Observation: Error: Invalid arguments for calc_shipping. Unknown arguments: weight_kg.
-Missing required arguments: weight. Valid arguments are: weight, destination.
-Retry using the exact tool schema.
-
-Thought: I should use the valid argument name.
-Action: calc_shipping(weight=0.7, destination="Hanoi")
-
-Observation: 25600
-```
-
-After the prompt/spec correction, the normal final run no longer needed an extra recovery step. The multi-step order was completed in 4 LLM steps with 3 tool calls:
+After this correction, the agent no longer needed an extra recovery step. The multi-step order was completed in 4 LLM steps with 3 tool calls:
 
 1. Check iPhone price, weight, and stock.
 2. Validate coupon `WINNER`.
@@ -191,22 +146,6 @@ Total: 46,782,000 + 25,600 = 46,807,600 VND
 ### Lesson Learned
 
 Telemetry was important because it made the failure visible at the exact step where it happened. Without step-by-step logs, the final wrong answer might look like a reasoning issue, but the real issue was a tool interface mismatch. For production agents, logs should capture model output, parsed action, tool arguments, tool result, latency, and termination status.
-
-The V2 improvement also showed that ReAct agents should not trust LLM-generated tool calls blindly. Tool validation turns a runtime exception into a controlled observation, which gives the model a chance to self-correct while keeping the system stable.
-
-### Verification
-
-I verified Agent v2 with:
-
-```bash
-python -m pytest tests\test_agent_v2.py
-```
-
-Result:
-
-```text
-2 passed
-```
 
 ---
 
@@ -228,9 +167,7 @@ In the final demo, this made a clear difference. The agent calculated the iPhone
 
 The agent is not always better than the chatbot. For simple questions, the ReAct agent can be slower and more expensive because it may spend extra tokens deciding whether to use tools. A direct chatbot answer is often enough for general questions such as explaining what a coupon is or describing how shipping usually works.
 
-The agent can also fail in more complex ways. A chatbot usually fails by hallucinating an answer. A ReAct agent can fail through parser errors, invalid tool names, wrong argument names, repeated tool calls, or exceeding `max_steps`. This means agent reliability depends not only on model quality, but also on prompt design, parser robustness, tool schema clarity, validation, and telemetry.
-
-Agent v2 improved this reliability by checking the tool call before execution. This did not make the model smarter, but it made the system safer. The important lesson is that production agents need software guardrails around the LLM.
+The agent can also fail in more complex ways. A chatbot usually fails by hallucinating an answer. A ReAct agent can fail through parser errors, invalid tool names, wrong argument names, repeated tool calls, or exceeding `max_steps`. This means agent reliability depends not only on model quality, but also on prompt design, parser robustness, tool schema clarity, and telemetry.
 
 ### 3. Observation
 
@@ -254,7 +191,7 @@ If the number of tools grows, the agent should not receive every tool in the pro
 
 The agent should include stronger guardrails before executing sensitive actions. For example, checking stock and calculating totals are safe read-only operations, but placing an order or charging payment should require explicit confirmation.
 
-Agent v2 already adds the first layer of safety by validating tool names and arguments before execution. A future supervisor layer could extend this idea by validating higher-risk actions:
+A supervisor layer could validate actions before execution:
 
 - Is the tool name allowed?
 - Are the arguments valid?
@@ -277,3 +214,4 @@ To scale this into a production RAG or multi-agent system, I would add:
 - A final verifier agent that checks whether the answer is supported by observations and retrieved documents.
 
 This would make the system more reliable for larger e-commerce workflows while keeping each component easier to test and monitor.
+
